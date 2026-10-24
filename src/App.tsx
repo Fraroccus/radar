@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { fetchRadarData } from './services/radarService';
-import { RadarItem, PracticalUse, SCOPES, TYPES, PRICES, LLMS, Scope, ItemType, Price, LLM } from './types';
+import { RadarItem, PracticalUse, SCOPES, TYPES, PRICES, Scope, ItemType, Price } from './types';
 
 const TIME_RANGES = [
   { label: 'Ultima settimana', value: 7 },
@@ -120,7 +120,6 @@ export default function App() {
   const [filterScope, setFilterScope] = useState<Scope>('Tutti');
   const [filterType, setFilterType] = useState<ItemType>('Tutti');
   const [filterPrice, setFilterPrice] = useState<Price>('Tutti');
-  const [filterLLM, setFilterLLM] = useState<LLM>('Tutti');
   const [timeRange, setTimeRange] = useState(30);
 
   // Detect if running inside an iframe or embedded mode (e.g. ?embed=true)
@@ -241,10 +240,9 @@ export default function App() {
       const matchScope = filterScope === 'Tutti' || item.scope === filterScope;
       const matchType = filterType === 'Tutti' || item.type === filterType;
       const matchPrice = filterPrice === 'Tutti' || item.price === filterPrice;
-      const matchLLM = filterLLM === 'Tutti' || item.llm === filterLLM;
-      return matchScope && matchType && matchPrice && matchLLM;
+      return matchScope && matchType && matchPrice;
     });
-  }, [items, filterScope, filterType, filterPrice, filterLLM]);
+  }, [items, filterScope, filterType, filterPrice]);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -406,20 +404,6 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2 text-[12px]">
-            <span className="font-bold text-slate-400">Modello:</span>
-            <div className="flex gap-1.5">
-              {LLMS.map(l => (
-                <button 
-                  key={l}
-                  onClick={() => setFilterLLM(l)}
-                  className={`filter-pill-sleek ${filterLLM === l ? 'active' : ''}`}
-                >
-                  {l}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 text-[12px]">
             <span className="font-bold text-slate-400">Prezzo:</span>
             <div className="flex gap-1.5">
               {PRICES.map(p => (
@@ -540,11 +524,6 @@ export default function App() {
                             <span className="px-2 py-0.5 bg-slate-600 text-white text-[9px] font-bold uppercase rounded leading-none flex items-center">
                               {item.type}
                             </span>
-                            {item.llm && item.llm !== 'Altri' && (
-                              <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 text-[9px] font-bold uppercase rounded leading-none flex items-center">
-                                {item.llm}
-                              </span>
-                            )}
                           </div>
                         </div>
                         <p className="text-slate-500 text-[12px] leading-relaxed mb-4 line-clamp-2">
@@ -677,11 +656,6 @@ export default function App() {
                     <span className="px-3 py-1 bg-slate-100 text-slate-500 text-[10px] font-bold uppercase rounded-md border border-slate-200">
                       {selectedItem.type}
                     </span>
-                    {selectedItem.llm && (
-                      <span className="px-3 py-1 bg-indigo-50 text-indigo-600 text-[10px] font-bold uppercase rounded-md border border-indigo-100">
-                        {selectedItem.llm}
-                      </span>
-                    )}
                   </div>
 
                   <h2 className="text-3xl font-extrabold text-slate-900 mb-4 leading-tight">
