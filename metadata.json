@@ -1,0 +1,8 @@
+{
+  "name": "AI Radar per Formatori",
+  "description": "Strumento per formatori specializzati in AI applicata alla didattica e all'ufficio. Monitora novità, tool ed esercizi in tempo reale.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
