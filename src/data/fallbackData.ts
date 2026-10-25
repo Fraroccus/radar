@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { RadarItem, PracticalUse } from '../types';
+import { RadarItem, PracticalUse } from '../types.ts';
 
 export const FALLBACK_ITEMS: RadarItem[] = [
   {

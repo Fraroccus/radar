@@ -40,7 +40,7 @@ export default async function handler(req: any, res: any) {
           content: `Contesto attuale dell'app: ${JSON.stringify(context || {})}\n\nDomanda dell'utente: ${message || ''}`
         }
       ],
-      model: 'llama-3-8b-8192',
+      model: 'llama-3.3-70b-versatile',
     });
 
     return res.status(200).json({

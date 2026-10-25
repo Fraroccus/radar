@@ -288,8 +288,12 @@ export default function App() {
   // 1. All items matching the query regardless of filter pills (Scope, Type, Price)
   const matchedQueryItems = useMemo(() => {
     if (!activeQuery) return items;
+    // If the server just fetched results specifically for this search query, display all returned items
+    if (lastSearchQuery && lastSearchQuery.toLowerCase() === activeQuery.toLowerCase()) {
+      return items;
+    }
     return filterRadarItems(items, activeQuery);
-  }, [items, activeQuery]);
+  }, [items, activeQuery, lastSearchQuery]);
 
   // 2. Items matching both the query AND the selected Scope, Type, Price filters
   const filteredItems = useMemo(() => {
@@ -304,8 +308,11 @@ export default function App() {
   // 3. Filtered practical uses based on active query
   const displayedPracticalUses = useMemo(() => {
     if (!activeQuery) return practicalUses;
+    if (lastSearchQuery && lastSearchQuery.toLowerCase() === activeQuery.toLowerCase()) {
+      return practicalUses;
+    }
     return filterPracticalUses(practicalUses, activeQuery);
-  }, [practicalUses, activeQuery]);
+  }, [practicalUses, activeQuery, lastSearchQuery]);
 
   const resetFilters = () => {
     setFilterScope('Tutti');

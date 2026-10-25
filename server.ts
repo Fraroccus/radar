@@ -29,17 +29,34 @@ async function startServer() {
     next();
   });
 
-  // Radar Data API powered by Gemini with Google Search Grounding & Quota Fallback
-  app.post("/api/radar", async (req, res) => {
-    const { days = 30, query } = req.body;
+  // Health Check Endpoint
+  app.get("/api/health", (req, res) => {
+    const apiKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY)?.trim();
+    const hasApiKey = Boolean(apiKey);
+    return res.json({
+      status: "ok",
+      hasApiKey,
+      keyConfigured: hasApiKey,
+      keyPreview: apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-6)}` : null,
+      serverTime: new Date().toISOString()
+    });
+  });
+
+  // Radar Data API powered by Gemini with Dual-Tier Fallback
+  const handleRadar = async (req: express.Request, res: express.Response) => {
+    const days = req.body?.days || req.query?.days || 30;
+    const query = req.body?.query || req.query?.query;
     try {
-      const result = await executeRadarSearch(Number(days) || 30, query);
+      const result = await executeRadarSearch(Number(days) || 30, query ? String(query) : undefined);
       return res.json(result);
     } catch (err: any) {
       console.error("[Radar API Route Error]:", err);
       return res.status(500).json({ error: "Errore interno durante il recupero dei dati" });
     }
-  });
+  };
+
+  app.post("/api/radar", handleRadar);
+  app.get("/api/radar", handleRadar);
 
   // Groq Assistant API
   app.post("/api/assistant", async (req, res) => {
@@ -63,7 +80,7 @@ async function startServer() {
             content: `Contesto attuale dell'app: ${JSON.stringify(context)}\n\nDomanda dell'utente: ${message}`
           }
         ],
-        model: "llama-3-8b-8192",
+        model: "llama-3.3-70b-versatile",
       });
 
       res.json({ response: completion.choices[0]?.message?.content || "Nessuna risposta." });
