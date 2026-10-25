@@ -5,12 +5,15 @@
 
 import { RadarItem, PracticalUse } from "../types";
 import { FALLBACK_ITEMS, FALLBACK_PRACTICAL_USES } from "../data/fallbackData";
+import { filterRadarItems, filterPracticalUses } from "./searchUtils";
 
 export interface RadarDataResponse {
   items: RadarItem[];
   practicalUses: PracticalUse[];
   isFallback?: boolean;
   quotaExceeded?: boolean;
+  hasApiKey?: boolean;
+  engineMode?: 'gemini-live' | 'verified-archive';
   message?: string;
   fromCache?: boolean;
 }
@@ -40,35 +43,33 @@ export async function fetchRadarData(days: number = 30, query?: string): Promise
       practicalUses: data.practicalUses || [],
       isFallback: data.isFallback,
       quotaExceeded: data.quotaExceeded,
+      hasApiKey: data.hasApiKey,
+      engineMode: data.engineMode || (data.isFallback ? 'verified-archive' : 'gemini-live'),
       message: data.message || data.note,
       fromCache: data.fromCache
     };
   } catch (error) {
     console.warn("Avviso nel recupero dati radar dal server:", error);
 
-    // Resilient standalone fallback: if backend is unreachable (e.g. purely static GitHub Pages hosting),
-    // supply curated observatory data directly in the browser so the app never shows a broken screen!
+    // Resilient standalone fallback: if backend is unreachable or in static hosting,
+    // supply curated observatory data directly in the browser with smart semantic matching!
     let filteredItems = [...FALLBACK_ITEMS];
     let filteredUses = [...FALLBACK_PRACTICAL_USES];
 
     if (query && query.trim()) {
-      const q = query.toLowerCase().trim();
-      const words = q.split(/\s+/).filter(w => w.length > 2);
-      filteredItems = filteredItems.filter(item => {
-        const text = `${item.title} ${item.description} ${item.scope} ${item.type} ${item.exercise} ${item.llm}`.toLowerCase();
-        return text.includes(q) || words.some(w => text.includes(w));
-      });
-      filteredUses = filteredUses.filter(use => {
-        const text = `${use.useCase} ${use.prompt} ${use.llm} ${use.scope}`.toLowerCase();
-        return text.includes(q) || words.some(w => text.includes(w));
-      });
+      filteredItems = filterRadarItems(filteredItems, query.trim());
+      filteredUses = filterPracticalUses(filteredUses, query.trim());
     }
 
     return {
       items: filteredItems,
       practicalUses: filteredUses,
       isFallback: true,
-      message: "Modalità Standalone: Visualizzazione dell'Archivio Verificato dell'Osservatorio (oltre 25 tool e modelli di frontiera). Il backend per le ricerche web in tempo reale non è raggiungibile o il sito è ospitato in modalità statica."
+      hasApiKey: false,
+      engineMode: 'verified-archive',
+      message: query && filteredItems.length === 0
+        ? `Nessuna corrispondenza nell'Archivio Verificato per "${query}". Prova con termini affini (es. didattica, video, calcolo, prompt) o chiedi all'assistente AI.`
+        : "Modalità Standalone: Visualizzazione dell'Archivio Verificato dell'Osservatorio (oltre 25 tool e modelli di frontiera catalogati)."
     };
   }
 }

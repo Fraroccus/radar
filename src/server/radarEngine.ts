@@ -5,6 +5,7 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { FALLBACK_ITEMS, FALLBACK_PRACTICAL_USES } from "../data/fallbackData";
+import { filterRadarItems, filterPracticalUses } from "../services/searchUtils";
 
 // Helper to parse Italian date strings (e.g. "23 Ottobre 2026") into Date objects
 export function parseItalianDate(dateStr: string): Date | null {
@@ -107,19 +108,11 @@ export function filterFallbackData(days?: number, query?: string) {
     filtered = recentItems.length >= 5 ? recentItems : filtered;
   }
 
-  // 2. Query filtering if search input is provided
+  // 2. Query filtering if search input is provided (using semantic synonym matching)
   if (query && query.trim()) {
-    const q = query.toLowerCase().trim();
-    const words = q.split(/\s+/).filter(w => w.length > 2);
-
-    const queryMatched = filtered.filter(item => {
-      const text = `${item.title} ${item.description} ${item.scope} ${item.type} ${item.exercise} ${item.llm}`.toLowerCase();
-      if (text.includes(q)) return true;
-      return words.some(w => text.includes(w));
-    });
-
-    if (queryMatched.length > 0) {
-      filtered = queryMatched;
+    const matched = filterRadarItems(filtered, query.trim());
+    if (matched.length > 0) {
+      filtered = matched;
     }
   }
 
@@ -130,16 +123,10 @@ export function filterFallbackData(days?: number, query?: string) {
     return db - da;
   });
 
-  // Filter practical uses
+  // Filter practical uses with semantic scoring
   let uses = [...FALLBACK_PRACTICAL_USES];
   if (query && query.trim()) {
-    const q = query.toLowerCase().trim();
-    const words = q.split(/\s+/).filter(w => w.length > 2);
-    const matchedUses = uses.filter(use => {
-      const text = `${use.useCase} ${use.prompt} ${use.llm} ${use.scope}`.toLowerCase();
-      if (text.includes(q)) return true;
-      return words.some(w => text.includes(w));
-    });
+    const matchedUses = filterPracticalUses(uses, query.trim());
     if (matchedUses.length > 0) {
       uses = matchedUses;
     }
@@ -175,12 +162,14 @@ export async function executeRadarSearch(days: number = 30, query?: string) {
       practicalUses,
       isFallback: true,
       quotaExceeded: true,
+      hasApiKey: true,
+      engineMode: 'verified-archive',
       message: "Limite di quota o traffico temporaneamente elevato sulle API live. È attivo l'Osservatorio Verificato con oltre 25 novità e modelli di frontiera (Argon, Jevs, Claude 3.7, ecc.)."
     };
   }
 
   // 3. Check if API key is present
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY)?.trim();
   if (!apiKey) {
     console.warn("GEMINI_API_KEY non trovata nell'ambiente server. Utilizzo dati di fallback.");
     const { items, practicalUses } = filterFallbackData(daysNum, query);
@@ -188,7 +177,10 @@ export async function executeRadarSearch(days: number = 30, query?: string) {
       items,
       practicalUses,
       isFallback: true,
-      note: "Configura GEMINI_API_KEY per abilitare la ricerca live in tempo reale."
+      hasApiKey: false,
+      quotaExceeded: false,
+      engineMode: 'verified-archive',
+      message: "Osservatorio Verificato attivo: consultazione rapida tra oltre 25 novità e modelli curati (chiave API Gemini non rilevata sul server di produzione. Esegui il Redeploy su Vercel se l'hai appena aggiunta)."
     };
   }
 
@@ -216,7 +208,7 @@ export async function executeRadarSearch(days: number = 30, query?: string) {
 
     const systemInstruction = `Sei un osservatorio esperto e scrupoloso in intelligenza artificiale per formatori, professionisti e imprese italiane ("AI Radar per Formatori").
 Trova novità concrete, modelli di frontiera e tool recenti effettuando ricerche sul web in tempo reale tramite Google Search.
-Restituisci ESCLUSIVAMENTE un oggetto JSON valido (senza testo descrittivo aggiuntivo, senza blocchi discorsivi).
+Restituisci ESCLUSIVAMENTE un blocco JSON valido (senza testo descrittivo aggiuntivo, senza commenti, senza formule di cortesia).
 
 Struttura JSON richiesta:
 {
@@ -253,29 +245,34 @@ Regole fondamentali:
 - Nessun link inventato: usa i domini o articoli ufficiali reali o 'N.D.'.
 - Tutto rigorosamente in lingua ITALIANA.`;
 
+    // Note: In Gemini API, tools like googleSearch cannot be combined with responseMimeType: "application/json"
+    // (doing so produces '400 Tool use with a response mime type application/json is unsupported').
+    // We enforce JSON through systemInstruction and clean parse the response.
     const response = await ai.models.generateContent({
       model: "gemini-3.8-flash",
-      contents: `${basePrompt}\n\nRestituisci esclusivamente il JSON valido.`,
+      contents: `${basePrompt}\n\nRispondi esclusivamente con il blocco JSON valido.`,
       config: {
         systemInstruction,
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json"
+        tools: [{ googleSearch: {} }]
       }
     });
 
     let rawText = response.text || "";
     rawText = rawText.trim();
-    if (rawText.startsWith("```json")) {
-      rawText = rawText.slice(7);
-    } else if (rawText.startsWith("```")) {
-      rawText = rawText.slice(3);
+    
+    // Robust JSON extraction from markdown code fences or raw text
+    const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    let jsonString = fenceMatch ? fenceMatch[1].trim() : rawText;
+    
+    if (!jsonString.startsWith('{')) {
+      const firstBrace = jsonString.indexOf('{');
+      const lastBrace = jsonString.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        jsonString = jsonString.substring(firstBrace, lastBrace + 1);
+      }
     }
-    if (rawText.endsWith("```")) {
-      rawText = rawText.slice(0, -3);
-    }
-    rawText = rawText.trim();
 
-    const parsed = JSON.parse(rawText);
+    const parsed = JSON.parse(jsonString);
 
     const items = (parsed.items || []).map((item: any, idx: number) => sanitizeItemSource({
       ...item,
@@ -310,7 +307,14 @@ Regole fondamentali:
       timestamp: Date.now()
     });
 
-    return { items, practicalUses };
+    return { 
+      items, 
+      practicalUses,
+      isFallback: false,
+      hasApiKey: true,
+      quotaExceeded: false,
+      engineMode: 'gemini-live' as const
+    };
   } catch (error: any) {
     const errStr = (error?.message || String(error) || "").toLowerCase();
     const status = error?.status;
@@ -344,10 +348,12 @@ Regole fondamentali:
       items,
       practicalUses,
       isFallback: true,
+      hasApiKey: Boolean(apiKey),
       quotaExceeded: isQuotaOrDemandError,
+      engineMode: 'verified-archive' as const,
       message: isQuotaOrDemandError
         ? "Limite di quota o traffico elevato sulle API Gemini live. Vengono mostrati i dati verificati dell'osservatorio (con oltre 25 novità e modelli di frontiera tra cui Argon, Jevs e Claude 3.7)."
-        : "Ricerca web momentaneamente non disponibile. Vengono visualizzati i dati verificati dell'osservatorio."
+        : "Ricerca web live momentaneamente non disponibile. Vengono visualizzati i dati verificati dell'osservatorio."
     };
   }
 }

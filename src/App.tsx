@@ -26,10 +26,17 @@ import {
   History,
   MessageCircle,
   Send,
-  Sparkles
+  Sparkles,
+  Database,
+  FilterX,
+  CheckCircle2,
+  HelpCircle,
+  Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { fetchRadarData } from './services/radarService';
+import { filterRadarItems, filterPracticalUses, POPULAR_SUGGESTIONS } from './services/searchUtils';
+import { DiagnosticsModal } from './components/DiagnosticsModal';
 import { RadarItem, PracticalUse, SCOPES, TYPES, PRICES, Scope, ItemType, Price } from './types';
 
 const TIME_RANGES = [
@@ -116,23 +123,26 @@ export default function App() {
   const [lastSearchQuery, setLastSearchQuery] = useState('');
   const [quotaNotice, setQuotaNotice] = useState<string | null>(null);
 
+  // Engine & Diagnostics state
+  const [engineMode, setEngineMode] = useState<'gemini-live' | 'verified-archive'>('verified-archive');
+  const [hasApiKey, setHasApiKey] = useState(false);
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+  const [isTestingApi, setIsTestingApi] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    status: 'idle' | 'success' | 'warning' | 'error';
+    message: string;
+    latencyMs?: number;
+  } | null>(null);
+
+  // Assistant modal control
+  const [isAssistantOpen, setIsAssistantOpen] = useState(false);
+  const [assistantExternalPrompt, setAssistantExternalPrompt] = useState<string | null>(null);
+
   // Filters state
   const [filterScope, setFilterScope] = useState<Scope>('Tutti');
   const [filterType, setFilterType] = useState<ItemType>('Tutti');
   const [filterPrice, setFilterPrice] = useState<Price>('Tutti');
   const [timeRange, setTimeRange] = useState(30);
-
-  // Detect if running inside an iframe or embedded mode (e.g. ?embed=true)
-  const isEmbedded = useMemo(() => {
-    try {
-      return (
-        window.self !== window.top ||
-        new URLSearchParams(window.location.search).get('embed') === 'true'
-      );
-    } catch {
-      return false;
-    }
-  }, []);
 
   const loadData = useCallback(async (days: number = timeRange, forceRefresh: boolean = false, query?: string) => {
     // Purge legacy cache formats
@@ -166,6 +176,8 @@ export default function App() {
             }));
             setItems(cleanedCachedItems);
             setPracticalUses(data.practicalUses || []);
+            setEngineMode(data.engineMode || (data.isFallback ? 'verified-archive' : 'gemini-live'));
+            setHasApiKey(data.hasApiKey ?? false);
             setLoading(false);
             setActiveTab('radar');
             if (data.quotaExceeded) {
@@ -191,6 +203,8 @@ export default function App() {
       }));
       setItems(cleanedItems);
       setPracticalUses(data.practicalUses || []);
+      setEngineMode(data.engineMode || (data.isFallback ? 'verified-archive' : 'gemini-live'));
+      setHasApiKey(data.hasApiKey ?? false);
       
       if (data.quotaExceeded) {
         setQuotaNotice(data.message || "Quota ricerche in tempo reale momentaneamente esaurita: visualizzazione dei dati verificati dell'osservatorio.");
@@ -235,27 +249,112 @@ export default function App() {
     }
   };
 
+  const handleTestConnection = async () => {
+    setIsTestingApi(true);
+    setTestResult(null);
+    const start = performance.now();
+    try {
+      const res = await fetchRadarData(7, undefined);
+      const latencyMs = Math.round(performance.now() - start);
+      if (res.isFallback) {
+        setTestResult({
+          status: 'warning',
+          message: res.message || "Risposta ricevuta dall'Osservatorio Verificato (backend operativo, modalità resiliente).",
+          latencyMs
+        });
+        setEngineMode('verified-archive');
+      } else {
+        setTestResult({
+          status: 'success',
+          message: "Connessione Live a Google Gemini attiva! Le ricerche web in tempo reale funzionano regolarmente.",
+          latencyMs
+        });
+        setEngineMode('gemini-live');
+      }
+      setHasApiKey(res.hasApiKey ?? false);
+    } catch (err: any) {
+      setTestResult({
+        status: 'error',
+        message: "Impossibile contattare il server. Verifica la connessione di rete o lo stato di Vercel."
+      });
+    } finally {
+      setIsTestingApi(false);
+    }
+  };
+
+  // Active query combining either instant typing or submitted search
+  const activeQuery = searchInput.trim();
+
+  // 1. All items matching the query regardless of filter pills (Scope, Type, Price)
+  const matchedQueryItems = useMemo(() => {
+    if (!activeQuery) return items;
+    return filterRadarItems(items, activeQuery);
+  }, [items, activeQuery]);
+
+  // 2. Items matching both the query AND the selected Scope, Type, Price filters
   const filteredItems = useMemo(() => {
-    return items.filter(item => {
+    return matchedQueryItems.filter(item => {
       const matchScope = filterScope === 'Tutti' || item.scope === filterScope;
       const matchType = filterType === 'Tutti' || item.type === filterType;
       const matchPrice = filterPrice === 'Tutti' || item.price === filterPrice;
       return matchScope && matchType && matchPrice;
     });
-  }, [items, filterScope, filterType, filterPrice]);
+  }, [matchedQueryItems, filterScope, filterType, filterPrice]);
+
+  // 3. Filtered practical uses based on active query
+  const displayedPracticalUses = useMemo(() => {
+    if (!activeQuery) return practicalUses;
+    return filterPracticalUses(practicalUses, activeQuery);
+  }, [practicalUses, activeQuery]);
+
+  const resetFilters = () => {
+    setFilterScope('Tutti');
+    setFilterType('Tutti');
+    setFilterPrice('Tutti');
+  };
+
+  const clearSearch = () => {
+    setSearchInput('');
+    setLastSearchQuery('');
+    setActiveTab('radar');
+    loadData(timeRange, false);
+  };
+
+  const askAssistantForQuery = (queryText: string) => {
+    setAssistantExternalPrompt(`Suggeriscimi i migliori tool AI, prompt operativi ed esercizi pratici per l'ambito: "${queryText}" per formatori e didattica.`);
+    setIsAssistantOpen(true);
+  };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    // Simple feedback could be added here
   };
 
+  const isFilterActive = filterScope !== 'Tutti' || filterType !== 'Tutti' || filterPrice !== 'Tutti';
+
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-slate-50/50">
       <Assistant 
         items={items} 
         practicalUses={practicalUses} 
-        lastSearchQuery={lastSearchQuery} 
+        lastSearchQuery={lastSearchQuery || activeQuery}
+        isOpen={isAssistantOpen}
+        setIsOpen={setIsAssistantOpen}
+        externalPrompt={assistantExternalPrompt}
+        onClearExternalPrompt={() => setAssistantExternalPrompt(null)}
       />
+
+      {/* Diagnostics Modal */}
+      <DiagnosticsModal
+        isOpen={isDiagnosticsOpen}
+        onClose={() => setIsDiagnosticsOpen(false)}
+        engineMode={engineMode}
+        hasApiKey={hasApiKey}
+        quotaNotice={quotaNotice}
+        onTestConnection={handleTestConnection}
+        isTesting={isTestingApi}
+        testResult={testResult}
+      />
+
       {/* Top Brand Banner */}
       <div className="bg-slate-900 text-slate-300 px-6 py-2 text-xs flex flex-wrap justify-between items-center border-b border-slate-800 gap-2">
         <div className="flex items-center gap-2">
@@ -284,28 +383,69 @@ export default function App() {
       </div>
 
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 py-4 px-8 sticky top-0 z-20 flex justify-between items-center shadow-sm">
+      <header className="bg-white border-b border-slate-200 py-3.5 px-6 lg:px-8 sticky top-0 z-20 flex flex-wrap justify-between items-center gap-4 shadow-sm">
         <div className="header-content">
-          <h1 className="text-2xl font-extrabold text-[#2563eb] tracking-tight leading-none mb-1">AI Radar per Formatori</h1>
-          <p className="text-[13px] text-slate-500">Novità ed esercizi aggiornati in tempo reale</p>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-[#2563eb] tracking-tight leading-none">
+              AI Radar per Formatori
+            </h1>
+            {/* Engine Status Pill */}
+            <button
+              onClick={() => setIsDiagnosticsOpen(true)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer ${
+                engineMode === 'gemini-live'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                  : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+              }`}
+              title="Clicca per aprire la diagnostica del motore AI e le informazioni sul backend"
+            >
+              <span className={`w-2 h-2 rounded-full ${engineMode === 'gemini-live' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+              <span>{engineMode === 'gemini-live' ? 'Gemini Live AI' : 'Archivio Verificato (25+ Tool)'}</span>
+              <HelpCircle size={11} className="opacity-60" />
+            </button>
+          </div>
+          <p className="text-[12px] text-slate-500 mt-1">Novità ed esercizi pratici aggiornati e verificati</p>
         </div>
 
-        <div className="flex-1 max-w-md mx-8">
+        {/* Search Bar */}
+        <div className="flex-1 max-w-md w-full min-w-[280px]">
           <form onSubmit={handleSearch} className="relative">
             <input 
               type="text" 
-              placeholder="Cerca tool o ambito specifico (es: 'matematica', 'copywriting'...)"
+              placeholder="Cerca tool, ambito o argomento (es: 'matematica', 'video', 'prompt')..."
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 pr-10"
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 pr-20 text-slate-800 placeholder:text-slate-400"
             />
-            <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-blue-500">
-              <Search size={18} />
-            </button>
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+              {searchInput && (
+                <button
+                  type="button"
+                  onClick={() => setSearchInput('')}
+                  className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 transition-colors"
+                  title="Cancella testo"
+                >
+                  <X size={15} />
+                </button>
+              )}
+              <button 
+                type="submit" 
+                className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors cursor-pointer"
+                title="Cerca nel web con AI"
+              >
+                <Search size={17} />
+              </button>
+            </div>
           </form>
+          {activeQuery && (
+            <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1 px-1">
+              <span>Filtro istantaneo attivo • Premi Invio per ricerca approfondita</span>
+              <span className="font-semibold text-blue-600">{filteredItems.length} trovati</span>
+            </div>
+          )}
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex gap-2">
           <button 
             onClick={() => {
               setActiveTab('radar');
@@ -313,7 +453,7 @@ export default function App() {
               loadData(timeRange, true);
             }}
             disabled={loading}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors ${activeTab === 'radar' ? 'bg-[#2563eb] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm transition-colors cursor-pointer ${activeTab === 'radar' ? 'bg-[#2563eb] text-white hover:bg-blue-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
           >
             {loading && activeTab === 'radar' ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
             Aggiorna Radar
@@ -331,6 +471,12 @@ export default function App() {
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <button 
+              onClick={() => setIsDiagnosticsOpen(true)}
+              className="px-2 py-0.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded font-semibold transition-colors text-[11px] cursor-pointer"
+            >
+              Info Chiave API
+            </button>
             <button 
               onClick={() => loadData(timeRange, true)}
               disabled={loading}
@@ -355,17 +501,19 @@ export default function App() {
           <button 
             onClick={() => {
               setActiveTab('radar');
+              setSearchInput('');
+              setLastSearchQuery('');
               loadData(timeRange, false);
             }}
-            className={`py-3 text-sm font-bold border-b-2 transition-colors ${activeTab === 'radar' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+            className={`py-3 text-sm font-bold border-b-2 transition-colors cursor-pointer ${activeTab === 'radar' && !activeQuery ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
           >
             📡 Radar Generale
           </button>
           <button 
             onClick={() => setActiveTab('search')}
-            className={`py-3 text-sm font-bold border-b-2 transition-colors ${activeTab === 'search' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+            className={`py-3 text-sm font-bold border-b-2 transition-colors cursor-pointer ${activeTab === 'search' || activeQuery ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
           >
-            🔍 Ricerca Specifica
+            🔍 Ricerca {activeQuery ? `("${activeQuery}")` : 'Specifica'}
           </button>
         </div>
         
@@ -377,7 +525,7 @@ export default function App() {
                 <button 
                   key={s}
                   onClick={() => setFilterScope(s)}
-                  className={`filter-pill-sleek ${filterScope === s ? 'active' : ''}`}
+                  className={`filter-pill-sleek cursor-pointer ${filterScope === s ? 'active' : ''}`}
                 >
                   {s}
                 </button>
@@ -389,13 +537,13 @@ export default function App() {
             <div className="flex gap-1.5">
               {TYPES.map(t => {
                 const count = t === 'Tutti' 
-                  ? items.length 
-                  : items.filter(i => i.type === t).length;
+                  ? matchedQueryItems.length 
+                  : matchedQueryItems.filter(i => i.type === t).length;
                 return (
                   <button 
                     key={t}
                     onClick={() => setFilterType(t)}
-                    className={`filter-pill-sleek ${filterType === t ? 'active' : ''}`}
+                    className={`filter-pill-sleek cursor-pointer ${filterType === t ? 'active' : ''}`}
                   >
                     {t} <span className="opacity-70 text-[10px] ml-0.5">({count})</span>
                   </button>
@@ -410,7 +558,7 @@ export default function App() {
                 <button 
                   key={p}
                   onClick={() => setFilterPrice(p)}
-                  className={`filter-pill-sleek ${filterPrice === p ? 'active' : ''}`}
+                  className={`filter-pill-sleek cursor-pointer ${filterPrice === p ? 'active' : ''}`}
                 >
                   {p}
                 </button>
@@ -426,48 +574,71 @@ export default function App() {
                   key={r.value}
                   onClick={() => {
                     setTimeRange(r.value);
-                    loadData(r.value, false, activeTab === 'search' ? searchInput : undefined);
+                    loadData(r.value, false, activeQuery || undefined);
                   }}
-                  className={`filter-pill-sleek ${timeRange === r.value ? 'active' : ''}`}
+                  className={`filter-pill-sleek cursor-pointer ${timeRange === r.value ? 'active' : ''}`}
                 >
                   {r.label}
                 </button>
               ))}
             </div>
           </div>
+
+          {isFilterActive && (
+            <button
+              onClick={resetFilters}
+              className="text-[11px] font-bold text-slate-400 hover:text-slate-700 flex items-center gap-1 ml-auto border-l border-slate-200 pl-4 cursor-pointer"
+              title="Azzera filtri"
+            >
+              <FilterX size={13} />
+              Azzera filtri
+            </button>
+          )}
         </div>
       </div>
 
-    <main className="flex-1 max-w-[1400px] mx-auto w-full grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-8 p-8">
+      <main className="flex-1 max-w-[1400px] mx-auto w-full grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-8 p-6 lg:p-8">
         {/* Main Content Area */}
         <div className="content-area">
-          {lastSearchQuery && (
-            <div className="mb-6 flex items-center justify-between bg-blue-50 border border-blue-100 p-4 rounded-2xl">
+          {/* Active Search Query Header */}
+          {activeQuery && (
+            <div className="mb-6 flex flex-wrap items-center justify-between bg-blue-50/80 border border-blue-100 p-4 rounded-2xl gap-3">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
+                <div className="p-2.5 bg-blue-100 rounded-xl text-blue-600">
                   <Search size={20} />
                 </div>
                 <div>
-                  <p className="text-[10px] text-blue-500 font-bold uppercase tracking-widest">Risultati della ricerca per:</p>
-                  <p className="text-xl font-extrabold text-blue-900 leading-tight">"{lastSearchQuery}"</p>
+                  <p className="text-[10px] text-blue-500 font-bold uppercase tracking-widest">Risultati filtrati per:</p>
+                  <p className="text-lg font-extrabold text-blue-900 leading-tight">"{activeQuery}"</p>
                 </div>
               </div>
-              <button 
-                onClick={() => {
-                  setLastSearchQuery('');
-                  setSearchInput('');
-                  setActiveTab('radar');
-                  loadData(timeRange, false);
-                }}
-                className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-white px-4 py-2 rounded-xl shadow-sm border border-blue-100 transition-all active:scale-95 flex items-center gap-2"
-              >
-                <X size={14} /> Torna al Radar
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => handleSearch({ preventDefault: () => {} } as any)}
+                  disabled={loading}
+                  className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-3.5 py-2 rounded-xl shadow-sm transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+                >
+                  {loading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                  <span>Cerca Novità Live con Gemini</span>
+                </button>
+                <button 
+                  onClick={clearSearch}
+                  className="text-xs font-bold text-slate-600 hover:text-slate-800 bg-white px-3.5 py-2 rounded-xl shadow-sm border border-slate-200 transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <X size={13} /> Azzera
+                </button>
+              </div>
             </div>
           )}
-          <h2 className="text-base font-bold text-slate-800 mb-6 flex items-center gap-2">
-            📌 Ultime Novità & Tool
-          </h2>
+
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              📌 Ultime Novità & Tool 
+              <span className="text-xs font-normal text-slate-400">
+                ({filteredItems.length} {filteredItems.length === 1 ? 'risorsa' : 'risorse'})
+              </span>
+            </h2>
+          </div>
 
           {loading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -479,19 +650,106 @@ export default function App() {
             <div className="bg-red-50 text-red-600 p-12 rounded-2xl text-center border border-red-100">
               <AlertCircle className="w-12 h-12 mx-auto mb-4 opacity-50" />
               <p className="font-semibold">{error}</p>
-              <button onClick={loadData} className="mt-4 text-red-700 font-bold underline">Riprova</button>
+              <button onClick={() => loadData()} className="mt-4 text-red-700 font-bold underline cursor-pointer">Riprova</button>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <AnimatePresence mode='popLayout'>
                 {filteredItems.length === 0 ? (
                   <motion.div 
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="col-span-full py-20 text-center bg-white rounded-xl border border-dashed border-slate-200"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="col-span-full p-8 sm:p-12 text-center bg-white rounded-2xl border border-slate-200 shadow-sm"
                   >
-                    <Search className="w-10 h-10 text-slate-200 mx-auto mb-3" />
-                    <p className="text-slate-500 text-sm">Nessun risultato trovato con i filtri attuali.</p>
+                    {/* Scenario A: Query matches items, but filters (Scope/Type/Price) hid them */}
+                    {matchedQueryItems.length > 0 ? (
+                      <div className="max-w-md mx-auto space-y-4">
+                        <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+                          <Layers size={24} />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-bold text-slate-800">
+                            Nessun risultato con i filtri correnti
+                          </h3>
+                          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                            I filtri attivi ({filterScope !== 'Tutti' && `Ambito: ${filterScope}`} {filterType !== 'Tutti' && `• Tipo: ${filterType}`} {filterPrice !== 'Tutti' && `• Prezzo: ${filterPrice}`}) non mostrano risultati per <strong>"{activeQuery}"</strong>, ma abbiamo trovato <strong>{matchedQueryItems.length} {matchedQueryItems.length === 1 ? 'risorsa' : 'risorse'}</strong> in altri ambiti!
+                          </p>
+                        </div>
+                        <div className="pt-2 flex flex-wrap justify-center gap-3">
+                          <button
+                            onClick={resetFilters}
+                            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm active:scale-95 cursor-pointer flex items-center gap-2"
+                          >
+                            <FilterX size={14} /> Mostra tutti i {matchedQueryItems.length} risultati
+                          </button>
+                          <button
+                            onClick={clearSearch}
+                            className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                          >
+                            Azzera ricerca
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Scenario B: Zero matches anywhere in catalog */
+                      <div className="max-w-lg mx-auto space-y-6">
+                        <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
+                          <Search size={28} />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-bold text-slate-900">
+                            Nessun tool specifico trovato per "{activeQuery}"
+                          </h3>
+                          <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+                            Il termine cercato non è presente nell'osservatorio locale. Puoi consultare i suggerimenti rapidi oppure attivare una ricerca estesa:
+                          </p>
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                          <button
+                            onClick={() => askAssistantForQuery(activeQuery)}
+                            className="w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-blue-200 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                          >
+                            <Sparkles size={14} /> Chiedi all'Assistente AI
+                          </button>
+                          <a
+                            href={`https://www.google.com/search?q=${encodeURIComponent(activeQuery + ' AI novità tool')}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full sm:w-auto px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all border border-slate-200 flex items-center justify-center gap-2"
+                          >
+                            <span>Cerca su Google Notizie</span>
+                            <ExternalLink size={12} />
+                          </a>
+                        </div>
+
+                        {/* Popular topic suggestions */}
+                        <div className="pt-4 border-t border-slate-100 text-left">
+                          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2.5 text-center">
+                            Argomenti consigliati da esplorare:
+                          </p>
+                          <div className="flex flex-wrap justify-center gap-1.5">
+                            {POPULAR_SUGGESTIONS.map(sug => (
+                              <button
+                                key={sug}
+                                onClick={() => setSearchInput(sug)}
+                                className="px-3 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 text-slate-600 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                              >
+                                {sug}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={clearSearch}
+                          className="text-xs text-blue-600 hover:underline font-semibold cursor-pointer"
+                        >
+                          ← Torna alla panoramica completa di tutte le novità
+                        </button>
+                      </div>
+                    )}
                   </motion.div>
                 ) : (
                   filteredItems.map((item) => (
@@ -569,27 +827,44 @@ export default function App() {
         </div>
 
         {/* Sidebar */}
-        <aside className="sidebar flex flex-col bg-white rounded-2xl border border-slate-200 p-6 h-fit sticky top-32">
-          <h2 className="text-base font-bold text-slate-800 mb-6 flex items-center gap-2">
-            ⚡ Utilizzi Pratici LLM
-          </h2>
+        <aside className="sidebar flex flex-col bg-white rounded-2xl border border-slate-200 p-6 h-fit sticky top-28 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              ⚡ Utilizzi Pratici LLM
+            </h2>
+            <span className="text-[11px] text-slate-400 font-semibold">
+              ({displayedPracticalUses.length})
+            </span>
+          </div>
 
           <div className="flex flex-col">
             {loading ? (
               [1, 2, 3, 4].map(i => <div key={i} className="h-24 bg-slate-50 rounded-xl mb-4 animate-pulse" />)
+            ) : displayedPracticalUses.length === 0 ? (
+              <div className="py-8 text-center text-xs text-slate-400">
+                <p>Nessun prompt associato alla ricerca corrente.</p>
+                {activeQuery && (
+                  <button
+                    onClick={() => askAssistantForQuery(activeQuery)}
+                    className="mt-2 text-blue-600 font-bold hover:underline block mx-auto cursor-pointer"
+                  >
+                    Genera un prompt con l'AI
+                  </button>
+                )}
+              </div>
             ) : (
-              practicalUses.map((use, idx) => (
+              displayedPracticalUses.map((use, idx) => (
                 <div 
                   key={use.id} 
                   onClick={() => setSelectedUse(use)}
-                  className={`py-4 cursor-pointer hover:bg-slate-50 px-2 -mx-2 rounded-xl transition-colors ${idx !== practicalUses.length - 1 ? 'border-b border-slate-100' : ''}`}
+                  className={`py-4 cursor-pointer hover:bg-slate-50 px-2 -mx-2 rounded-xl transition-colors ${idx !== displayedPracticalUses.length - 1 ? 'border-b border-slate-100' : ''}`}
                 >
                   <div className="flex justify-between text-[10px] font-extrabold text-blue-600 mb-1 uppercase tracking-tight">
                     <span>{use.llm}</span> <span>{use.scope}</span>
                   </div>
-                  <div className="text-[13px] font-semibold text-slate-800 mb-2">{use.useCase}</div>
+                  <div className="text-[13px] font-semibold text-slate-800 mb-2 leading-snug">{use.useCase}</div>
                   <div className="group relative">
-                    <div className="prompt-box-sleek truncate pr-8">
+                    <div className="prompt-box-sleek truncate pr-8 text-xs font-mono">
                       {use.prompt}
                     </div>
                     <button 
@@ -597,7 +872,7 @@ export default function App() {
                         e.stopPropagation();
                         copyToClipboard(use.prompt);
                       }}
-                      className="absolute right-1 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors p-1"
                       title="Copia"
                     >
                       <ClipboardCopy size={12} />
@@ -619,7 +894,7 @@ export default function App() {
         AI Radar per Formatori © 2026 • Realizzato con Tecnologia Gemini
       </footer>
 
-      {/* Modal Detail */}
+      {/* Modal Detail for RadarItem or PracticalUse */}
       <AnimatePresence>
         {(selectedItem || selectedUse) && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -644,7 +919,7 @@ export default function App() {
                   setSelectedItem(null);
                   setSelectedUse(null);
                 }}
-                className="absolute top-6 right-6 p-2 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
+                className="absolute top-6 right-6 p-2 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
               >
                 <X size={24} />
               </button>
@@ -705,7 +980,6 @@ export default function App() {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3">
-                      {/* Secondary Google search link to find all news, reviews and press coverage */}
                       <a 
                         href={`https://www.google.com/search?q=${encodeURIComponent(selectedItem.title + ' ' + (selectedItem.llm && selectedItem.llm !== 'Altri' ? selectedItem.llm : '') + ' AI news annuncio')}`}
                         target="_blank" 
@@ -717,7 +991,6 @@ export default function App() {
                         <span>Cerca Notizie & Articoli</span>
                       </a>
 
-                      {/* Primary direct link to resource / repo */}
                       {selectedItem.source && selectedItem.source !== 'N.D.' ? (
                         <a 
                           href={selectedItem.source} 
@@ -766,7 +1039,7 @@ export default function App() {
                         </div>
                         <button 
                           onClick={() => copyToClipboard(selectedUse.prompt)}
-                          className="absolute top-4 right-4 p-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors shadow-lg"
+                          className="absolute top-4 right-4 p-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors shadow-lg cursor-pointer"
                           title="Copia Prompt"
                         >
                           <ClipboardCopy size={18} />
@@ -802,19 +1075,41 @@ export default function App() {
   );
 }
 
-function Assistant({ items, practicalUses, lastSearchQuery }: { items: any[], practicalUses: any[], lastSearchQuery: string }) {
-  const [isOpen, setIsOpen] = useState(false);
+interface AssistantProps {
+  items: any[];
+  practicalUses: any[];
+  lastSearchQuery: string;
+  isOpen: boolean;
+  setIsOpen: (open: boolean) => void;
+  externalPrompt?: string | null;
+  onClearExternalPrompt?: () => void;
+}
+
+function Assistant({ 
+  items, 
+  practicalUses, 
+  lastSearchQuery,
+  isOpen,
+  setIsOpen,
+  externalPrompt,
+  onClearExternalPrompt
+}: AssistantProps) {
   const [message, setMessage] = useState('');
   const [chat, setChat] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSendMessage = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!message.trim() || isLoading) return;
+  // Trigger external prompt if provided
+  useEffect(() => {
+    if (externalPrompt && externalPrompt.trim()) {
+      sendMessage(externalPrompt.trim());
+      if (onClearExternalPrompt) onClearExternalPrompt();
+    }
+  }, [externalPrompt]);
 
-    const userMessage = message.trim();
-    setMessage('');
-    setChat(prev => [...prev, { role: 'user', content: userMessage }]);
+  const sendMessage = async (text: string) => {
+    if (!text.trim() || isLoading) return;
+
+    setChat(prev => [...prev, { role: 'user', content: text }]);
     setIsLoading(true);
 
     const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
@@ -823,7 +1118,7 @@ function Assistant({ items, practicalUses, lastSearchQuery }: { items: any[], pr
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: userMessage,
+          message: text,
           context: {
             currentSearch: lastSearchQuery,
             itemCount: items.length,
@@ -837,10 +1132,18 @@ function Assistant({ items, practicalUses, lastSearchQuery }: { items: any[], pr
       
       setChat(prev => [...prev, { role: 'assistant', content: data.response }]);
     } catch (err) {
-      setChat(prev => [...prev, { role: 'assistant', content: "Spiacente, ho riscontrato un problema tecnico con Groq. Verifica la chiave API." }]);
+      setChat(prev => [...prev, { role: 'assistant', content: "Spiacente, il servizio assistente non è al momento configurato o ha raggiunto un limite temporaneo. Puoi comunque consultare tutte le schede e gli esercizi pratici del radar!" }]);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSendMessage = (e: FormEvent) => {
+    e.preventDefault();
+    if (!message.trim()) return;
+    const msg = message;
+    setMessage('');
+    sendMessage(msg);
   };
 
   return (
@@ -848,7 +1151,8 @@ function Assistant({ items, practicalUses, lastSearchQuery }: { items: any[], pr
       {/* Toggle Button */}
       <button 
         onClick={() => setIsOpen(!isOpen)}
-        className="fixed bottom-6 right-6 z-50 p-4 bg-blue-600 text-white rounded-full shadow-2xl hover:bg-blue-700 transition-all active:scale-95 group"
+        className="fixed bottom-6 right-6 z-40 p-4 bg-blue-600 text-white rounded-full shadow-2xl hover:bg-blue-700 transition-all active:scale-95 group cursor-pointer"
+        title={isOpen ? "Chiudi assistente" : "Apri Assistente Didattico AI"}
       >
         {isOpen ? <X size={24} /> : <MessageCircle size={24} className="group-hover:rotate-12 transition-transform" />}
       </button>
@@ -870,9 +1174,15 @@ function Assistant({ items, practicalUses, lastSearchQuery }: { items: any[], pr
                 </div>
                 <div>
                   <p className="font-bold text-sm">Groq Assistant</p>
-                  <p className="text-[10px] opacity-70">Powered by Llama-3 (Cloud)</p>
+                  <p className="text-[10px] opacity-70">Supporto Didattico & Prompt</p>
                 </div>
               </div>
+              <button 
+                onClick={() => setIsOpen(false)}
+                className="p-1 rounded-full hover:bg-blue-700 text-blue-200 hover:text-white transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
             </div>
 
             {/* Messages */}
@@ -882,13 +1192,13 @@ function Assistant({ items, practicalUses, lastSearchQuery }: { items: any[], pr
                   <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
                     <MessageCircle className="text-blue-600" size={24} />
                   </div>
-                  <p className="text-sm font-bold text-slate-600">Come posso aiutarti?</p>
-                  <p className="text-xs text-slate-400 mt-1">Chiedimi tool specifici, prompt o consigli sulla didattica AI.</p>
+                  <p className="text-sm font-bold text-slate-700">Come posso aiutarti?</p>
+                  <p className="text-xs text-slate-400 mt-1 px-4">Chiedimi tool specifici, prompt operativi o consigli sulla didattica AI.</p>
                 </div>
               )}
               {chat.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] p-3 rounded-2xl text-sm ${
+                  <div className={`max-w-[80%] p-3 rounded-2xl text-xs sm:text-sm leading-relaxed whitespace-pre-wrap ${
                     msg.role === 'user' 
                       ? 'bg-blue-600 text-white rounded-tr-none' 
                       : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none shadow-sm'
@@ -909,20 +1219,20 @@ function Assistant({ items, practicalUses, lastSearchQuery }: { items: any[], pr
             </div>
 
             {/* Input */}
-            <form onSubmit={handleSendMessage} className="p-4 bg-white border-t border-slate-100 flex gap-2">
+            <form onSubmit={handleSendMessage} className="p-3 bg-white border-t border-slate-100 flex gap-2">
               <input 
                 type="text" 
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
-                placeholder="Scrivi qui..."
-                className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Scrivi una domanda..."
+                className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800"
               />
               <button 
                 type="submit"
                 disabled={isLoading || !message.trim()}
-                className="p-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                className="p-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors cursor-pointer"
               >
-                <Send size={18} />
+                <Send size={16} />
               </button>
             </form>
           </motion.div>
