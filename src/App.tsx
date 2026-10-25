@@ -34,7 +34,7 @@ import {
   Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { fetchRadarData } from './services/radarService';
+import { fetchRadarData, checkServerHealth } from './services/radarService';
 import { filterRadarItems, filterPracticalUses, POPULAR_SUGGESTIONS } from './services/searchUtils';
 import { DiagnosticsModal } from './components/DiagnosticsModal';
 import { RadarItem, PracticalUse, SCOPES, TYPES, PRICES, Scope, ItemType, Price } from './types';
@@ -126,6 +126,7 @@ export default function App() {
   // Engine & Diagnostics state
   const [engineMode, setEngineMode] = useState<'gemini-live' | 'verified-archive'>('verified-archive');
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [keyPreview, setKeyPreview] = useState<string | null>(null);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -238,7 +239,16 @@ export default function App() {
   }, [timeRange, items.length]);
 
   useEffect(() => {
+    // Initial data load and background server health check
     loadData();
+    checkServerHealth().then(health => {
+      if (health.hasApiKey) {
+        setHasApiKey(true);
+        if (health.keyPreview) {
+          setKeyPreview(health.keyPreview);
+        }
+      }
+    }).catch(() => {});
   }, []);
 
   const handleSearch = (e: FormEvent) => {
@@ -254,8 +264,23 @@ export default function App() {
     setTestResult(null);
     const start = performance.now();
     try {
+      // 1. Check server health & key presence
+      const health = await checkServerHealth();
+      if (health.hasApiKey) {
+        setHasApiKey(true);
+        if (health.keyPreview) {
+          setKeyPreview(health.keyPreview);
+        }
+      }
+
+      // 2. Test radar endpoint query
       const res = await fetchRadarData(7, undefined);
       const latencyMs = Math.round(performance.now() - start);
+
+      if (res.hasApiKey || health.hasApiKey) {
+        setHasApiKey(true);
+      }
+
       if (res.isFallback) {
         setTestResult({
           status: 'warning',
@@ -266,16 +291,15 @@ export default function App() {
       } else {
         setTestResult({
           status: 'success',
-          message: "Connessione Live a Google Gemini attiva! Le ricerche web in tempo reale funzionano regolarmente.",
+          message: "Connessione Live a Google Gemini attiva! Le novità e analisi AI in tempo reale funzionano regolarmente.",
           latencyMs
         });
         setEngineMode('gemini-live');
       }
-      setHasApiKey(res.hasApiKey ?? false);
     } catch (err: any) {
       setTestResult({
         status: 'error',
-        message: "Impossibile contattare il server. Verifica la connessione di rete o lo stato di Vercel."
+        message: "Impossibile contattare il server. Verifica la connessione di rete o lo stato del backend su Vercel."
       });
     } finally {
       setIsTestingApi(false);
@@ -356,6 +380,7 @@ export default function App() {
         onClose={() => setIsDiagnosticsOpen(false)}
         engineMode={engineMode}
         hasApiKey={hasApiKey}
+        keyPreview={keyPreview}
         quotaNotice={quotaNotice}
         onTestConnection={handleTestConnection}
         isTesting={isTestingApi}

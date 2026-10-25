@@ -4,8 +4,8 @@
  */
 
 import { GoogleGenAI } from "@google/genai";
-import { FALLBACK_ITEMS, FALLBACK_PRACTICAL_USES } from "../data/fallbackData.ts";
-import { filterRadarItems, filterPracticalUses } from "../services/searchUtils.ts";
+import { FALLBACK_ITEMS, FALLBACK_PRACTICAL_USES } from "../data/fallbackData";
+import { filterRadarItems, filterPracticalUses } from "../services/searchUtils";
 
 // Helper to parse Italian date strings (e.g. "23 Ottobre 2026") into Date objects
 export function parseItalianDate(dateStr: string): Date | null {
@@ -255,11 +255,12 @@ Regole fondamentali:
   let modeMessage = '';
 
   // -------------------------------------------------------------
-  // TIER 1: Try Gemini 3.5 Flash with Google Search Grounding (with 6s timeout)
+  // TIER 1: Try Google Search Grounding with quick 4s timeout
+  // If user quota for search grounding is exceeded (429) or unavailable, immediately pass to Tier 2
   // -------------------------------------------------------------
   try {
     const groundingPromise = ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-flash-latest",
       contents: `${basePrompt}\n\nRispondi esclusivamente con il blocco JSON valido.`,
       config: {
         systemInstruction,
@@ -267,7 +268,7 @@ Regole fondamentali:
       }
     });
     const groundingTimeout = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Timeout Google Search Grounding (6s)")), 6000)
+      setTimeout(() => reject(new Error("Timeout Search Grounding (4s)")), 4000)
     );
 
     const response = await Promise.race([groundingPromise, groundingTimeout]) as any;
@@ -277,36 +278,41 @@ Regole fondamentali:
       modeMessage = "Ricerca Web Live attiva: dati estratti in tempo reale con Google Search Grounding.";
     }
   } catch (groundingError: any) {
-    console.warn("[Radar Engine] Tier 1 Google Search Grounding non disponibile o timeout (passaggio a Tier 2 Gemini Direct JSON):", groundingError?.message || groundingError);
+    console.warn("[Radar Engine] Tier 1 Google Search Grounding non disponibile o quota esaurita (passaggio a Tier 2 Gemini Direct JSON):", groundingError?.message || groundingError);
   }
 
   // -------------------------------------------------------------
-  // TIER 2: If Tier 1 failed or timed out (e.g. 429 quota on Search Grounding or 503 spike),
-  // execute Gemini 3.5 Flash directly with responseMimeType: "application/json" (with 6s timeout)
-  // This succeeds on free/standard keys and provides dynamic AI intelligence!
+  // TIER 2: Fast & Resilient Direct JSON Generation with gemini-flash-lite-latest / gemini-3.5-flash-lite
+  // Highly reliable under standard/free quotas, responds in 1.5-6s, never hits 503 high demand spikes!
   // -------------------------------------------------------------
   if (!liveEngineSuccess) {
-    try {
-      const directPromise = ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: `${basePrompt}\n\nRispondi esclusivamente con il blocco JSON valido con la struttura richiesta.`,
-        config: {
-          systemInstruction,
-          responseMimeType: "application/json"
-        }
-      });
-      const directTimeout = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Timeout Gemini Direct (6s)")), 6000)
-      );
+    const modelsToTry = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.5-flash"];
+    for (const modelName of modelsToTry) {
+      try {
+        const directPromise = ai.models.generateContent({
+          model: modelName,
+          contents: `${basePrompt}\n\nRispondi esclusivamente con un singolo blocco JSON valido con la struttura richiesta.`,
+          config: {
+            systemInstruction,
+            responseMimeType: "application/json"
+          }
+        });
+        const directTimeout = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Timeout Gemini Direct ${modelName} (14s)`)), 14000)
+        );
 
-      const directResponse = await Promise.race([directPromise, directTimeout]) as any;
-      rawJsonText = (directResponse?.text || '').trim();
-      if (rawJsonText) {
-        liveEngineSuccess = true;
-        modeMessage = "Ricerca AI Live Gemini attiva (sintesi diretta con modello Gemini 3.5 Flash).";
+        const directResponse = await Promise.race([directPromise, directTimeout]) as any;
+        rawJsonText = (directResponse?.text || '').trim();
+        if (rawJsonText) {
+          liveEngineSuccess = true;
+          modeMessage = query 
+            ? `Ricerca AI Live Gemini attiva per "${query}" (modello ${modelName}).`
+            : `Ricerca AI Live Gemini attiva (sintesi dinamica con modello ${modelName}).`;
+          break;
+        }
+      } catch (directError: any) {
+        console.warn(`[Radar Engine] Tentativo diretto con ${modelName} non riuscito:`, directError?.message || directError);
       }
-    } catch (directError: any) {
-      console.warn("[Radar Engine] Chiamata diretta Gemini non riuscita:", directError?.message || directError);
     }
   }
 

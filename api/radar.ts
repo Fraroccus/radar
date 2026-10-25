@@ -4,7 +4,7 @@
  * Vercel Serverless Function Handler for /api/radar
  */
 
-import { executeRadarSearch, filterFallbackData } from '../src/server/radarEngine.ts';
+import { executeRadarSearch, filterFallbackData } from '../src/server/radarEngine';
 
 export default async function handler(req: any, res: any) {
   // Set CORS headers so it can be called from radar.roccoformazione.it or any client

@@ -23,6 +23,7 @@ interface DiagnosticsModalProps {
   onClose: () => void;
   engineMode: 'gemini-live' | 'verified-archive';
   hasApiKey?: boolean;
+  keyPreview?: string | null;
   quotaNotice?: string | null;
   onTestConnection: () => Promise<void>;
   isTesting: boolean;
@@ -38,6 +39,7 @@ export function DiagnosticsModal({
   onClose,
   engineMode,
   hasApiKey,
+  keyPreview,
   quotaNotice,
   onTestConnection,
   isTesting,
@@ -163,16 +165,16 @@ export function DiagnosticsModal({
                     hasApiKey ? 'text-emerald-600' : 'text-amber-600'
                   }`}>
                     {hasApiKey ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
-                    {hasApiKey ? 'Presente nell\'ambiente server' : 'Non configurata (Usa Archivio Verificato)'}
+                    {hasApiKey ? (keyPreview ? `Configurata (${keyPreview})` : 'Presente nell\'ambiente server') : 'Non configurata (Usa Archivio Verificato)'}
                   </span>
                 </div>
 
                 <div className="py-2.5 flex justify-between items-center">
                   <span className="text-slate-500 font-medium flex items-center gap-1.5">
-                    <Database size={14} className="text-slate-400" /> Modello Primario:
+                    <Database size={14} className="text-slate-400" /> Motore AI:
                   </span>
                   <span className="font-mono text-slate-700 bg-white px-2 py-0.5 rounded border border-slate-200">
-                    gemini-3.8-flash + Google Search Grounding
+                    Google Gemini Flash + Search Grounding
                   </span>
                 </div>
 

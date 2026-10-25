@@ -13,9 +13,51 @@ export interface RadarDataResponse {
   isFallback?: boolean;
   quotaExceeded?: boolean;
   hasApiKey?: boolean;
+  keyPreview?: string | null;
   engineMode?: 'gemini-live' | 'verified-archive';
   message?: string;
   fromCache?: boolean;
+}
+
+export interface ServerHealthResponse {
+  status: string;
+  hasApiKey: boolean;
+  keyConfigured?: boolean;
+  keyPreview?: string | null;
+  serverTime?: string;
+  error?: string;
+}
+
+export async function checkServerHealth(): Promise<ServerHealthResponse> {
+  const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${apiBase}/api/health`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {
+    // Try fallback on /api/radar?health=1
+  }
+
+  try {
+    const res2 = await fetch(`${apiBase}/api/radar?health=1`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+    if (res2.ok) {
+      return await res2.json();
+    }
+  } catch {}
+
+  return {
+    status: 'offline',
+    hasApiKey: false,
+    keyConfigured: false,
+    error: 'Server non raggiungibile'
+  };
 }
 
 export async function fetchRadarData(days: number = 30, query?: string): Promise<RadarDataResponse> {
@@ -69,7 +111,7 @@ export async function fetchRadarData(days: number = 30, query?: string): Promise
       engineMode: 'verified-archive',
       message: query && filteredItems.length === 0
         ? `Nessuna corrispondenza nell'Archivio Verificato per "${query}". Prova con termini affini (es. didattica, video, calcolo, prompt) o chiedi all'assistente AI.`
-        : "Modalità Standalone: Visualizzazione dell'Archivio Verificato dell'Osservatorio (oltre 25 tool e modelli di frontiera catalogati)."
+        : "Visualizzazione Archivio Verificato dell'Osservatorio (oltre 25 tool e modelli di frontiera catalogati)."
     };
   }
 }
