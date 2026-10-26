@@ -4,8 +4,8 @@
  */
 
 import { GoogleGenAI } from "@google/genai";
-import { FALLBACK_ITEMS, FALLBACK_PRACTICAL_USES } from "../data/fallbackData";
-import { filterRadarItems, filterPracticalUses } from "../services/searchUtils";
+import { FALLBACK_ITEMS, FALLBACK_PRACTICAL_USES } from "../data/fallbackData.ts";
+import { filterRadarItems, filterPracticalUses } from "../services/searchUtils.ts";
 
 // Helper to parse Italian date strings (e.g. "23 Ottobre 2026") into Date objects
 export function parseItalianDate(dateStr: string): Date | null {
@@ -253,9 +253,12 @@ Regole fondamentali:
   let rawJsonText = '';
   let liveEngineSuccess = false;
   let modeMessage = '';
+  let lastApiError: string | null = null;
+  let isQuotaExceeded = false;
+  let isAuthInvalid = false;
 
   // -------------------------------------------------------------
-  // TIER 1: Try Google Search Grounding with quick 4s timeout
+  // TIER 1: Try Google Search Grounding with 8s timeout
   // If user quota for search grounding is exceeded (429) or unavailable, immediately pass to Tier 2
   // -------------------------------------------------------------
   try {
@@ -268,7 +271,7 @@ Regole fondamentali:
       }
     });
     const groundingTimeout = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Timeout Search Grounding (4s)")), 4000)
+      setTimeout(() => reject(new Error("Timeout Search Grounding (8s)")), 8000)
     );
 
     const response = await Promise.race([groundingPromise, groundingTimeout]) as any;
@@ -278,15 +281,19 @@ Regole fondamentali:
       modeMessage = "Ricerca Web Live attiva: dati estratti in tempo reale con Google Search Grounding.";
     }
   } catch (groundingError: any) {
-    console.warn("[Radar Engine] Tier 1 Google Search Grounding non disponibile o quota esaurita (passaggio a Tier 2 Gemini Direct JSON):", groundingError?.message || groundingError);
+    const msg = String(groundingError?.message || groundingError || '');
+    lastApiError = msg;
+    if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) isQuotaExceeded = true;
+    if (msg.includes('400') || msg.includes('401') || msg.includes('403') || msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED')) isAuthInvalid = true;
+    console.warn("[Radar Engine] Tier 1 Google Search Grounding non riuscito (passaggio a Tier 2 Gemini Direct JSON):", msg);
   }
 
   // -------------------------------------------------------------
-  // TIER 2: Fast & Resilient Direct JSON Generation with gemini-flash-lite-latest / gemini-3.5-flash-lite
-  // Highly reliable under standard/free quotas, responds in 1.5-6s, never hits 503 high demand spikes!
+  // TIER 2: Fast & Resilient Direct JSON Generation with official @google/genai models
+  // Models: gemini-flash-latest, gemini-3.1-flash-lite, gemini-3.8-flash
   // -------------------------------------------------------------
-  if (!liveEngineSuccess) {
-    const modelsToTry = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.5-flash"];
+  if (!liveEngineSuccess && !isAuthInvalid) {
+    const modelsToTry = ["gemini-flash-latest", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
     for (const modelName of modelsToTry) {
       try {
         const directPromise = ai.models.generateContent({
@@ -298,7 +305,7 @@ Regole fondamentali:
           }
         });
         const directTimeout = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error(`Timeout Gemini Direct ${modelName} (14s)`)), 14000)
+          setTimeout(() => reject(new Error(`Timeout Gemini Direct ${modelName} (12s)`)), 12000)
         );
 
         const directResponse = await Promise.race([directPromise, directTimeout]) as any;
@@ -311,7 +318,15 @@ Regole fondamentali:
           break;
         }
       } catch (directError: any) {
-        console.warn(`[Radar Engine] Tentativo diretto con ${modelName} non riuscito:`, directError?.message || directError);
+        const msg = String(directError?.message || directError || '');
+        lastApiError = msg;
+        if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) isQuotaExceeded = true;
+        if (msg.includes('400') || msg.includes('401') || msg.includes('403') || msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED')) {
+          isAuthInvalid = true;
+          console.warn(`[Radar Engine] Errore di autenticazione con ${modelName}:`, msg);
+          break; // Stop trying other models if key is invalid/unauthorized
+        }
+        console.warn(`[Radar Engine] Tentativo diretto con ${modelName} non riuscito:`, msg);
       }
     }
   }
@@ -381,18 +396,26 @@ Regole fondamentali:
   // -------------------------------------------------------------
   // TIER 3: Fallback to Curated Observatory Archive with hasApiKey: true
   // -------------------------------------------------------------
-  console.warn("[Radar Engine] Passaggio all'Osservatorio Verificato con chiave presente.");
+  console.warn("[Radar Engine] Passaggio all'Osservatorio Verificato con chiave presente. Dettaglio:", lastApiError);
   const { items, practicalUses } = filterFallbackData(daysNum, query);
+
+  let fallbackMessage = "Visualizzazione Archivio Verificato (motore Gemini operativo in modalità resiliente).";
+  if (isAuthInvalid) {
+    fallbackMessage = "La chiave GEMINI_API_KEY configurata non è autorizzata o abilitata (PERMISSION_DENIED). Verifica i permessi in Google AI Studio.";
+  } else if (isQuotaExceeded) {
+    fallbackMessage = "Quota richieste Google Gemini temporaneamente esaurita (429 RESOURCE_EXHAUSTED). Attivo l'Osservatorio Verificato con oltre 25 novità e modelli curati.";
+  } else if (query) {
+    fallbackMessage = `Visualizzazione Archivio Verificato per "${query}" (motore Gemini operativo in modalità resiliente).`;
+  }
   
   return {
     items,
     practicalUses,
     isFallback: true,
     hasApiKey: true,
-    quotaExceeded: false,
+    quotaExceeded: isQuotaExceeded,
+    apiError: lastApiError || undefined,
     engineMode: 'verified-archive' as const,
-    message: query
-      ? `Visualizzazione Archivio Verificato per "${query}" (motore Gemini operativo in modalità resiliente).`
-      : "Visualizzazione Archivio Verificato (motore Gemini operativo in modalità resiliente)."
+    message: fallbackMessage
   };
 }

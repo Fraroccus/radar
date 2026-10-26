@@ -66,13 +66,39 @@ export async function fetchRadarData(days: number = 30, query?: string): Promise
   const url = `${apiBase}/api/radar`;
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ days, query })
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ days, query })
+      });
+    } catch (postErr) {
+      // If POST was blocked (e.g. CORS preflight or network glitch), retry with GET
+      const getUrl = `${url}?days=${days}${query ? `&query=${encodeURIComponent(query)}` : ''}`;
+      response = await fetch(getUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' }
+      });
+    }
+
+    // If POST gave 405 Method Not Allowed or 500, attempt GET
+    if (!response.ok && (response.status === 405 || response.status === 500)) {
+      try {
+        const getUrl = `${url}?days=${days}${query ? `&query=${encodeURIComponent(query)}` : ''}`;
+        const getRes = await fetch(getUrl, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (getRes.ok) {
+          response = getRes;
+        }
+      } catch {
+        // Keep initial response error
+      }
+    }
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
@@ -90,7 +116,7 @@ export async function fetchRadarData(days: number = 30, query?: string): Promise
       message: data.message || data.note,
       fromCache: data.fromCache
     };
-  } catch (error) {
+  } catch (error: any) {
     console.warn("Avviso nel recupero dati radar dal server:", error);
 
     // Resilient standalone fallback: if backend is unreachable or in static hosting,
@@ -103,6 +129,8 @@ export async function fetchRadarData(days: number = 30, query?: string): Promise
       filteredUses = filterPracticalUses(filteredUses, query.trim());
     }
 
+    const errDetail = error?.message ? ` (${error.message})` : '';
+
     return {
       items: filteredItems,
       practicalUses: filteredUses,
@@ -111,7 +139,7 @@ export async function fetchRadarData(days: number = 30, query?: string): Promise
       engineMode: 'verified-archive',
       message: query && filteredItems.length === 0
         ? `Nessuna corrispondenza nell'Archivio Verificato per "${query}". Prova con termini affini (es. didattica, video, calcolo, prompt) o chiedi all'assistente AI.`
-        : "Visualizzazione Archivio Verificato dell'Osservatorio (oltre 25 tool e modelli di frontiera catalogati)."
+        : `Visualizzazione Archivio Verificato dell'Osservatorio (oltre 25 tool e modelli di frontiera catalogati)${errDetail}.`
     };
   }
 }
