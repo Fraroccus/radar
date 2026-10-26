@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import Groq from "groq-sdk";
 import dotenv from "dotenv";
-import { executeRadarSearch } from "./src/server/radarEngine.ts";
+import { executeRadarSearch } from "./api/radar.ts";
 
 dotenv.config();
 
